@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:batch="http://www.mulesoft.org/schema/mule/batch" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:cxf="http://www.mulesoft.org/schema/mule/cxf" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" version="EE-3.5.2"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/cxf http://www.mulesoft.org/schema/mule/cxf/current/mule-cxf.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd">
+    <db:mysql-config name="MySQL_Configuration_users" host="andrepcg.myftp.org" port="3306" user="remote" password="remote_pass" database="as_users" doc:name="MySQL Configuration"/>
+    <db:mysql-config name="MySQL_Configuration_inventory" host="andrepcg.myftp.org" port="3306" user="remote" password="remote_pass" database="inventory" doc:name="MySQL Configuration"/>
+    <db:mysql-config name="MySQL_Configuration_orders" host="andrepcg.myftp.org" port="3306" user="remote" password="remote_pass" database="orderinfo" doc:name="MySQL Configuration"/>
+    <flow name="LoginFlow" doc:name="LoginFlow">
+        <http:inbound-endpoint exchange-pattern="request-response" host="localhost" port="8081" path="EPElogin" doc:name="HTTP"/>
+        <cxf:jaxws-service serviceClass="wsbusiness.LoginInterface" doc:name="CXF"/>
+        <component class="wsbusiness.LoginImplementation" doc:name="Java"/>
+        <set-variable variableName="user" value="#[payload]" doc:name="Record User"/>
+        <choice doc:name="Choice">
+            <when expression="#[user.isLogin()==true]">
+                <db:select config-ref="MySQL_Configuration_users" doc:name="Login">
+                    <db:parameterized-query><![CDATA[select username,password from users where username like #[payload.getUsername()] and password like #[payload.getPassword()]]]></db:parameterized-query>
+                </db:select>
+                <choice doc:name="If user exists">
+                    <when expression="#[payload.size()&gt;0]">
+                        <expression-component doc:name="Get Current Time"><![CDATA[user.setDate(new Date());]]></expression-component>
+                        <expression-component doc:name="Generate Token"><![CDATA[#[user.setToken("")]]]></expression-component>
+                        <db:update config-ref="MySQL_Configuration_users" doc:name="Set Token in DB">
+                            <db:parameterized-query><![CDATA[update users set token=#[user.getToken()] where username like #[user.getUsername()] and password like #[user.getPassword()]]]></db:parameterized-query>
+                        </db:update>
+                        <expression-component doc:name="Write On Log"><![CDATA[user.writeOnFile(true);]]></expression-component>
+                    </when>
+                    <otherwise>
+                        <logger message="Does Nothing" level="INFO" doc:name="Does Nothing"/>
+                    </otherwise>
+                </choice>
+            </when>
+            <otherwise>
+                <db:select config-ref="MySQL_Configuration_users" doc:name="Logout">
+                    <db:parameterized-query><![CDATA[select token from users where username like #[payload.getUsername()] and password like #[payload.getPassword()]]]></db:parameterized-query>
+                </db:select>
+                <choice doc:name="Choice">
+                    <when expression="#[payload.size()&gt;0]">
+                        <logger message="token #[payload]" level="INFO" doc:name="Logger"/>
+                        <choice doc:name="Choice">
+                            <when expression="#[payload.get(0).token==null]">
+                                <expression-component doc:name="Expression"><![CDATA[user.setSuccess(false);]]></expression-component>
+                            </when>
+                            <otherwise>
+                                <expression-component doc:name="Expression"><![CDATA[user.setDate(new Date());]]></expression-component>
+                                <db:update config-ref="MySQL_Configuration_users" doc:name="Database">
+                                    <db:parameterized-query><![CDATA[update users set token=null where username like #[user.getUsername()]]]></db:parameterized-query>
+                                </db:update>
+                                <expression-component doc:name="Expression"><![CDATA[user.writeOnFile(false);]]></expression-component>
+                                <expression-component doc:name="Expression"><![CDATA[user.setSuccess(true);]]></expression-component>
+                            </otherwise>
+                        </choice>
+                    </when>
+                    <otherwise>
+                        <expression-component doc:name="Expression"><![CDATA[user.setSuccess(false);]]></expression-component>
+                    </otherwise>
+                </choice>
+            </otherwise>
+        </choice>
+        <set-payload value="#[user]" doc:name="Set User"/>
+    </flow>
+    <flow name="InventoryFlow" doc:name="InventoryFlow">
+        <http:inbound-endpoint exchange-pattern="request-response" host="localhost" port="8081" path="EPEinventory" doc:name="HTTP"/>
+        <cxf:jaxws-service serviceClass="wsbusiness.InventoryInterface" doc:name="CXF"/>
+        <component class="wsbusiness.InventoryImplementation" doc:name="Java"/>
+        <set-variable variableName="listaInventario" value="#[payload]" doc:name="Record Inventory List"/>
+        <db:select config-ref="MySQL_Configuration_users" doc:name="Check If User Is Logged">
+            <db:parameterized-query><![CDATA[select * from users where username like #[listaInventario.getUsername()] and token like #[listaInventario.getToken()]]]></db:parameterized-query>
+        </db:select>
+        <choice doc:name="If User Is Logged">
+            <when expression="#[payload.size()&gt;0]">
+                <choice doc:name="">
+                    <when expression="#[listaInventario.getChoice().equalsIgnoreCase(&quot;trees&quot;)]">
+                        <db:select config-ref="MySQL_Configuration_inventory" doc:name="Trees">
+                            <db:parameterized-query><![CDATA[Select * from trees]]></db:parameterized-query>
+                        </db:select>
+                        <foreach doc:name="For Each">
+                            <set-variable variableName="inventario" value="#[payload]" doc:name="Record Inventory"/>
+                            <expression-component doc:name="Add Inventory to ArrayList"><![CDATA[listaInventario.getListaInventario().add(new wsbusiness.Inventory(inventario.product_code,inventario.description,inventario.quantity,inventario.price));]]></expression-component>
+                        </foreach>
+                    </when>
+                    <when expression="#[listaInventario.getChoice().equalsIgnoreCase(&quot;seeds&quot;)]">
+                        <db:select config-ref="MySQL_Configuration_inventory" doc:name="Seeds">
+                            <db:parameterized-query><![CDATA[Select * from seeds]]></db:parameterized-query>
+                        </db:select>
+                        <foreach doc:name="For Each">
+                            <set-variable variableName="inventario" value="#[payload]" doc:name="Record Inventory"/>
+                            <expression-component doc:name="Add Inventory to ArrayList"><![CDATA[listaInventario.getListaInventario().add(new wsbusiness.Inventory(inventario.product_code,inventario.description,inventario.quantity,inventario.price));]]></expression-component>
+                        </foreach>
+                    </when>
+                    <when expression="#[listaInventario.getChoice().equalsIgnoreCase(&quot;shrubs&quot;)]">
+                        <db:select config-ref="MySQL_Configuration_inventory" doc:name="Shrubs">
+                            <db:parameterized-query><![CDATA[Select * from shrubs]]></db:parameterized-query>
+                        </db:select>
+                        <foreach doc:name="For Each">
+                            <set-variable variableName="inventario" value="#[payload]" doc:name="Record Inventory"/>
+                            <expression-component doc:name="Add Inventory to ArrayList"><![CDATA[listaInventario.getListaInventario().add(new wsbusiness.Inventory(inventario.product_code,inventario.description,inventario.quantity,inventario.price));]]></expression-component>
+                        </foreach>
+                    </when>
+                    <otherwise>
+                        <logger message="NOT FOUND" level="INFO" doc:name="Logger"/>
+                    </otherwise>
+                </choice>
+            </when>
+            <otherwise>
+                <logger message="Not logged in" level="INFO" doc:name="Logger"/>
+            </otherwise>
+        </choice>
+        <set-payload value="#[listaInventario]" doc:name="Set Inventory List"/>
+    </flow>
+    <flow name="OrderFlow" doc:name="OrderFlow">
+        <http:inbound-endpoint exchange-pattern="request-response" host="localhost" port="8081" path="EPEorder" doc:name="HTTP"/>
+        <cxf:jaxws-service serviceClass="wsbusiness.OrderInterface" doc:name="CXF"/>
+        <component class="wsbusiness.OrderImplementation" doc:name="Java"/>
+        <set-variable variableName="order" value="#[payload]" doc:name="Record Order"/>
+        <db:select config-ref="MySQL_Configuration_users" doc:name="Check If User Is Logged">
+            <db:parameterized-query><![CDATA[select * from users where username like #[order.getUsername()] and token like #[order.getToken()]]]></db:parameterized-query>
+        </db:select>
+        <choice doc:name="If User Is Logged">
+            <when expression="#[payload.size()&gt;0]">
+                <expression-component doc:name="Get Current Time"><![CDATA[order.setDate(new Date());]]></expression-component>
+                <db:insert config-ref="MySQL_Configuration_orders" doc:name="Insert New Order ">
+                    <db:parameterized-query><![CDATA[insert into orders(order_date,first_name,last_name,address,phone,shipped) values (#[order.getOrderDate()],#[order.getFirstName()],#[order.getLastName()],#[order.getAddress()],#[order.getPhone()],0)]]></db:parameterized-query>
+                </db:insert>
+                <db:select config-ref="MySQL_Configuration_orders" doc:name="Get Order ID">
+                    <db:parameterized-query><![CDATA[Select * from orders where order_date like #[order.getOrderDate()] and first_name like #[order.getFirstName()] and last_name like #[order.getLastName()] and address like #[order.getAddress()] and phone like #[order.getPhone()]]]></db:parameterized-query>
+                </db:select>
+                <choice doc:name="If Everything is Correct">
+                    <when expression="#[payload.size()&gt;0]">
+                        <set-variable variableName="orderID" value="#[payload.get(0).order_id]" doc:name="Record Order ID"/>
+                        <set-variable variableName="listaProdutos" value="#[order.getListaProdutos()]" doc:name="Record Product List"/>
+                        <foreach collection="listaProdutos" doc:name="For Each">
+                            <set-variable variableName="itemCost" value="#[payload.getItemPrice()]" doc:name="Record Item Price"/>
+                            <db:insert config-ref="MySQL_Configuration_orders" doc:name="Insert List of Products in DB">
+                                <db:parameterized-query><![CDATA[insert into productsinorders(item_id,product_id,description,item_price,order_id) values (#[payload.getItemId()],#[payload.getProductId()],#[payload.getDescription()],#[payload.getItemPrice()],#[orderID])]]></db:parameterized-query>
+                            </db:insert>
+                            <expression-component doc:name="Update Order Total Cost"><![CDATA[order.setTotalCost(itemCost);]]></expression-component>
+                        </foreach>
+                        <db:update config-ref="MySQL_Configuration_orders" doc:name="Update Order Total Cost in DB">
+                            <db:parameterized-query><![CDATA[update orders set total_cost=#[order.getTotalCost()] where order_id=#[orderID]]]></db:parameterized-query>
+                        </db:update>
+                        <expression-component doc:name="Write on File"><![CDATA[order.writeOnFile(orderID,listaProdutos);]]></expression-component>
+                        <expression-component doc:name="Set Success = True"><![CDATA[order.setSuccess(true);]]></expression-component>
+                    </when>
+                    <otherwise>
+                        <expression-component doc:name="Set Success = False"><![CDATA[order.setSuccess(false);]]></expression-component>
+                    </otherwise>
+                </choice>
+            </when>
+            <otherwise>
+                <expression-component doc:name="Set Success = False"><![CDATA[order.setSuccess(false);]]></expression-component>
+            </otherwise>
+        </choice>
+        <set-payload value="#[order]" doc:name="Set Order"/>
+    </flow>
+    <flow name="ShippingFlow" doc:name="ShippingFlow">
+        <http:inbound-endpoint exchange-pattern="request-response" host="localhost" port="8081" path="EPEshipping" doc:name="HTTP"/>
+        <cxf:jaxws-service serviceClass="wsbusiness.ShippingInterface" doc:name="CXF"/>
+        <component class="wsbusiness.ShippingImplementation" doc:name="Java"/>
+        <set-variable variableName="shipping" value="#[payload]" doc:name="Variable"/>
+        <db:select config-ref="MySQL_Configuration_orders" doc:name="Database">
+            <db:parameterized-query><![CDATA[select * from orders where order_id=#[shipping.getOrderID()]]]></db:parameterized-query>
+        </db:select>
+        <choice doc:name="Choice">
+            <when expression="#[payload.size()&gt;0]">
+                <expression-component doc:name="Expression"><![CDATA[shipping.setFirstName(payload.get(0).first_name);
+shipping.setLastName(payload.get(0).last_name);
+shipping.setTotalCost(payload.get(0).total_cost);
+shipping.setOrderDate(payload.get(0).order_date);]]></expression-component>
+                <db:select config-ref="MySQL_Configuration_orders" doc:name="Database">
+                    <db:parameterized-query><![CDATA[select * from productsinorders where order_id=#[shipping.getOrderID()]]]></db:parameterized-query>
+                </db:select>
+                <foreach doc:name="For Each">
+                    <set-variable variableName="product" value="#[payload]" doc:name="Variable"/>
+                    <expression-component doc:name="Expression"><![CDATA[shipping.addProduct(new wsbusiness.Product(product.description,product.item_price));]]></expression-component>
+                </foreach>
+                <expression-component doc:name="Expression"><![CDATA[shipping.writeOnFile();]]></expression-component>
+                <expression-component doc:name="Expression"><![CDATA[shipping.setSuccess(true);]]></expression-component>
+            </when>
+            <otherwise>
+                <expression-component doc:name="Expression"><![CDATA[shipping.setSuccess(false);]]></expression-component>
+            </otherwise>
+        </choice>
+        <set-payload value="#[shipping]" doc:name="Set Payload"/>
+    </flow>
+</mule>
